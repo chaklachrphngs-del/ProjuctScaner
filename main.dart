@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'db_helper.dart';
+import 'product_list_screen.dart';
 
 void main() {
   runApp(
@@ -19,9 +20,38 @@ class PriceScannerScreen extends StatefulWidget {
 }
 
 class _PriceScannerScreenState extends State<PriceScannerScreen> {
+  // 1. เพิ่ม MobileScannerController เข้ามาจัดการกล้อง
+  final MobileScannerController controller = MobileScannerController();
   bool isScanning = true;
 
-  // ฟังก์ชันเมื่อสแกนเจอเจอบาร์โค้ด
+  @override
+  void dispose() {
+    controller.dispose(); // คืนทรัพยากรเมื่อปิดหน้าจอ
+    super.dispose();
+  }
+
+  // ฟังก์ชันกลับมาสแกนต่อ (สั่งปิด Dialog + เปิดกล้องใหม่)
+  void _resumeScanning() {
+    if (Navigator.canPop(context)) {
+      Navigator.pop(context);
+    }
+    setState(() => isScanning = true);
+    controller.start();
+  }
+
+  // ฟังก์ชันสำหรับเปิดไปยังหน้าจัดการรายการสินค้า
+  void _openProductList() {
+    controller.stop(); // หยุดกล้องชั่วคราวขณะสลับหน้า
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const ProductListScreen()),
+    ).then((_) {
+      setState(() => isScanning = true);
+      controller.start(); // สั่งกล้องทำงานต่อเมื่อกลับมา
+    });
+  }
+
+  // ฟังก์ชันเมื่อสแกนเจอบาร์โค้ด
   void _onDetect(BarcodeCapture capture) async {
     if (!isScanning) return;
 
@@ -29,7 +59,8 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
     if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
       final String barcode = barcodes.first.rawValue!;
 
-      setState(() => isScanning = false); // หยุดสแกนชั่วคราวเพื่อประมวลผล
+      setState(() => isScanning = false);
+      controller.stop(); // หยุดกล้องชั่วคราวระหว่างโชว์ Dialog
 
       // ค้นหาข้อมูลใน DB
       final product = await DBHelper.getProduct(barcode);
@@ -37,16 +68,14 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
       if (!mounted) return;
 
       if (product != null) {
-        // กรณีเจอสินค้า -> แสดงราคา
         _showPriceDialog(product['name'], product['price'].toString());
       } else {
-        // กรณีไม่เจอ -> ให้ลงทะเบียนราคาใหม่
         _showAddProductDialog(barcode);
       }
     }
   }
 
-  // Dialog แสดงราคาขาย (ตัวใหญ่ชัดเจน)
+  // Dialog แสดงราคาขาย
   void _showPriceDialog(String name, String price) {
     showDialog(
       context: context,
@@ -57,7 +86,6 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
           style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
         ),
         content: Column(
-          mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
               "ราคาขาย",
@@ -76,10 +104,7 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
         ),
         actions: [
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() => isScanning = true); // กลับมาสแกนต่อ
-            },
+            onPressed: _resumeScanning, // ใช้ฟังก์ชันเพื่อเริ่มสแกนต่อ
             child: const Text("ตกลง / สแกนชิ้นต่อไป"),
           ),
         ],
@@ -98,7 +123,6 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
       builder: (context) => AlertDialog(
         title: Text("ไม่พบสินค้า ($barcode)"),
         content: Column(
-          mainAxisSize: MainAxisSize.min,
           children: [
             const Text("กรอกข้อมูลเพื่อบันทึกราคาไว้ใช้ครั้งถัดไป"),
             TextField(
@@ -115,25 +139,18 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() => isScanning = true);
-            },
-            child: const Text("ยกเลิก"),
-          ),
+          TextButton(onPressed: _resumeScanning, child: const Text("ยกเลิก")),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.isNotEmpty &&
-                  priceController.text.isNotEmpty) {
+              final price = double.tryParse(priceController.text);
+              if (nameController.text.isNotEmpty && price != null) {
                 await DBHelper.insertOrUpdateProduct(
                   barcode,
                   nameController.text,
-                  double.parse(priceController.text),
+                  price,
                 );
                 if (!mounted) return;
-                Navigator.pop(context);
-                setState(() => isScanning = true);
+                _resumeScanning();
               }
             },
             child: const Text("บันทึก"),
@@ -150,11 +167,24 @@ class _PriceScannerScreenState extends State<PriceScannerScreen> {
         title: const Text('สแกนเช็คราคาด่วน'),
         centerTitle: true,
         backgroundColor: Colors.blueAccent,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.list_alt),
+            tooltip: 'รายการสินค้า',
+            onPressed: _openProductList,
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _openProductList,
+        icon: const Icon(Icons.list),
+        label: const Text('จัดการสินค้า'),
+        backgroundColor: Colors.blueAccent,
       ),
       body: Stack(
         children: [
-          MobileScanner(onDetect: _onDetect),
-          // สี่เหลี่ยมมาร์กตำแหน่งสแกน
+          // 2. ผูก controller เข้ากับ MobileScanner
+          MobileScanner(controller: controller, onDetect: _onDetect),
           Center(
             child: Container(
               width: 260,
